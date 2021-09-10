@@ -1,12 +1,20 @@
 import enum
 
 
-__all__ = ['BuildTaskStatus']
+__all__ = ['BuildTaskStatus', 'TestTaskStatus']
 
 
 class BuildTaskStatus(enum.IntEnum):
 
     IDLE = 0
-    STARTED = 1
-    COMPLETED = 2
-    FAILED = 3
+    EXCLUDED = 1
+    STARTED = 2
+    COMPLETED = 3
+    FAILED = 4
+
+
+class TestTaskStatus(enum.IntEnum):
+    CREATED = 1
+    STARTED = 2
+    COMPLETED = 3
+    FAILED = 4

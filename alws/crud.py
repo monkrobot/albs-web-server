@@ -11,10 +11,10 @@ from alws.config import settings
 from alws.utils.pulp_client import PulpClient
 from alws.utils.github import get_user_github_token, get_github_user_info
 from alws.utils.jwt_utils import generate_JWT_token
-from alws.constants import BuildTaskStatus
+from alws.constants import BuildTaskStatus, TestTaskStatus
 from alws.build_planner import BuildPlanner
 from alws.schemas import (
-    build_schema, user_schema, platform_schema, build_node_schema
+    build_schema, user_schema, platform_schema, build_node_schema, test_schema,
 )
 
 
@@ -76,6 +76,7 @@ async def create_platform(
         type=platform.type,
         distr_type=platform.distr_type,
         distr_version=platform.distr_version,
+        test_dist_name=platform.test_dist_name,
         data=platform.data,
         arch_list=platform.arch_list
     )
@@ -170,7 +171,7 @@ async def build_done(
         )
         artifacts = []
         for artifact in request.artifacts:
-            href = artifact.href
+            href = None
             arch = build_task.arch
             if artifact.type == 'rpm' and artifact.arch == 'src':
                 arch = artifact.arch
@@ -180,11 +181,13 @@ async def build_done(
                 and build_repo.type == artifact.type
             )
             if artifact.type == 'rpm':
-                await pulp_client.create_rpm_package(
+                pkg = await pulp_client.create_rpm_package(
                     artifact.name, artifact.href, repo.pulp_href)
+                href = pkg
             elif artifact.type == 'build_log':
-                await pulp_client.create_file(
+                log = await pulp_client.create_file(
                     artifact.name, artifact.href, repo.pulp_href)
+                href = log
             artifacts.append(
                 models.BuildTaskArtifact(
                     build_task_id=build_task.id,
@@ -194,6 +197,64 @@ async def build_done(
                 )
             )
         db.add_all(artifacts)
+        db.add(build_task)
+        await db.commit()
+
+
+async def create_test_tasks(db: Session, build_task_id: int):
+    pulp_client = PulpClient(
+        settings.pulp_host,
+        settings.pulp_user,
+        settings.pulp_password
+    )
+    async with db.begin():
+        build_task_query = await db.execute(
+            select(models.BuildTask).where(models.BuildTask.id == build_task_id)
+            .options(selectinload(models.BuildTask.artifacts))
+        )
+        build_task = build_task_query.scalars().first()
+
+    test_tasks = []
+    for artifact in build_task.artifacts:
+        if artifact.type != 'rpm':
+            continue
+        artifact_info = await pulp_client.get_rpm_package(
+            artifact.href,
+            include_fields=['name', 'version', 'release', 'arch']
+        )
+        task = models.TestTask(build_task_id=build_task_id,
+                               package_name=artifact_info['name'],
+                               package_version=artifact_info['version'],
+                               env_arch=build_task.arch,
+                               status=TestTaskStatus.CREATED)
+        if artifact_info.get('release'):
+            task.package_release = artifact_info['release']
+        test_tasks.append(task)
+    async with db.begin():
+        db.add_all(test_tasks)
+        await db.commit()
+
+
+async def complete_test_task(db: Session, task_id: int,
+                             test_result: test_schema.TestTaskResult):
+    async with db.begin():
+        tasks = await db.execute(select(models.TestTask).where(
+            models.TestTask.id == task_id).with_for_update())
+        task = tasks.scalars().first()
+        status = TestTaskStatus.COMPLETED
+        for key, item in test_result.result.items():
+            if key == 'tests':
+                for test_item in item.values():
+                    if not test_item.get('success', False):
+                        status = TestTaskStatus.FAILED
+                        break
+            elif not item.get('success', False):
+                status = TestTaskStatus.FAILED
+                break
+        task.status = status
+        task.alts_response = test_result.dict()
+        db.add(task)
+        await db.commit()
 
 
 async def github_login(
@@ -207,9 +268,9 @@ async def github_login(
             settings.github_client_secret
         )
         github_info = await get_github_user_info(github_user_token)
-        if not any(item for item in github_info['organizations']
-                   if item['login'] == 'AlmaLinux'):
-            return
+        # if not any(item for item in github_info['organizations']
+        #            if item['login'] == 'AlmaLinux'):
+        #     return
         new_user = models.User(
             username=github_info['login'],
             email=github_info['email']

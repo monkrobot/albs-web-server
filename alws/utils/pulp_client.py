@@ -1,5 +1,6 @@
 import asyncio
-import urllib
+import typing
+import urllib.parse
 from typing import Optional
 
 import aiohttp
@@ -57,7 +58,9 @@ class PulpClient:
         }
         task = await self.make_post_request(ENDPOINT, data=payload)
         task_result = await self.wait_for_task(task['task'])
-        return task_result['created_resources'][0]
+        hrefs = [item for item in task_result['created_resources']
+                 if 'file/files' in item]
+        return hrefs[0] if hrefs else None
 
     async def create_rpm_package(
                 self,
@@ -73,7 +76,9 @@ class PulpClient:
         }
         task = await self.make_post_request(ENDPOINT, data=payload)
         task_result = await self.wait_for_task(task['task'])
-        return task_result['created_resources'][0]
+        hrefs = [item for item in task_result['created_resources']
+                 if 'rpm/packages' in item]
+        return hrefs[0] if hrefs else None
 
     async def create_file_distro(self, name: str, repository: str) -> str:
         ENDPOINT = 'pulp/api/v3/distributions/file/file/'
@@ -99,6 +104,16 @@ class PulpClient:
         distro = await self.get_distro(task_result['created_resources'][0])
         return distro['base_url']
 
+    async def get_rpm_package(self, package_href,
+                              include_fields: typing.List[str] = None,
+                              exclude_fields: typing.List[str] = None):
+        params = {}
+        if include_fields:
+            params['fields'] = include_fields
+        if exclude_fields:
+            params['exclude_fields'] = exclude_fields
+        return await self.make_get_request(package_href, params=params)
+
     async def get_distro(self, distro_href: str):
         return await self.make_get_request(distro_href)
 
@@ -109,22 +124,18 @@ class PulpClient:
             task = await self.make_get_request(task_href)
         return task
 
-    async def make_get_request(self, endpoint: str):
+    async def make_get_request(self, endpoint: str, params: dict = None):
         full_url = urllib.parse.urljoin(self._host, endpoint)
         async with aiohttp.ClientSession(auth=self._auth) as session:
-            async with session.get(full_url) as response:
+            async with session.get(full_url, params=params) as response:
                 json = await response.json()
-                print(json)
                 response.raise_for_status()
                 return json
-                return await response.json()
 
     async def make_post_request(self, endpoint: str, data: Optional[dict]):
         full_url = urllib.parse.urljoin(self._host, endpoint)
         async with aiohttp.ClientSession(auth=self._auth) as session:
             async with session.post(full_url, json=data) as response:
                 json = await response.json()
-                print(json)
                 response.raise_for_status()
                 return json
-                return await response.json()
