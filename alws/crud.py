@@ -15,11 +15,11 @@ from alws.releases import get_release_plan, execute_release_plan, EmptyReleasePl
 from alws.utils.pulp_client import PulpClient
 from alws.utils.github import get_user_github_token, get_github_user_info
 from alws.utils.jwt_utils import generate_JWT_token
-from alws.constants import BuildTaskStatus, TestTaskStatus, ReleaseStatus
+from alws.constants import BuildTaskStatus, TestTaskStatus, ReleaseStatus, SignStatus
 from alws.build_planner import BuildPlanner
 from alws.schemas import (
     build_schema, user_schema, platform_schema, build_node_schema,
-    distro_schema, test_schema, release_schema
+    distro_schema, test_schema, release_schema, sign_node_schema
 )
 from alws.utils.distro_utils import create_empty_repo
 
@@ -867,3 +867,44 @@ async def commit_release(db: Session, release_id: int) -> (models.Release, str):
         selectinload(models.Release.platform)
     ))
     return release_res.scalars().first(), message
+
+
+#async def get_available_sign_task(
+#            db: Session,
+#            request: sign_node_schema.RequestSignTask
+#        ):
+#    async with db.begin():
+#        where_query = models.SignTask.has(
+#    models.SignTask.pgp_key_id.in_(request.pgp_keyids)
+
+
+async def get_available_build(
+            db: Session
+        ):
+    async with db.begin():
+        db_task = await db.execute(
+            select(models.SignTasks).where(
+                models.SignTasks.status == SignStatus.COMPLETED
+            )
+        )
+        db_task = db_task.scalars().first()
+        if not db_task:
+            return
+        await db.commit()
+    return db_task
+
+
+async def create_sign_task(
+            db: Session, 
+            request: sign_node_schema.RequestSignTask
+        ):
+    async with db.begin():
+        await db.execute(
+            models.SignTasks.insert().values(
+                    build_id=request.build_id,
+                    status=SignStatus.IDLE,
+                    log_url='',
+                    sign_key=request.pgp_keyids
+                )
+        )
+    return 'Task is created'

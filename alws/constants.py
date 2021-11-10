@@ -29,3 +29,12 @@ class ReleaseStatus(enum.IntEnum):
     IN_PROGRESS = 2
     COMPLETED = 3
     FAILED = 4
+
+
+class SignStatus(enum.IntEnum):
+
+    IDLE = 0
+    STARTED = 1
+    COMPLETED = 2
+    FAILED = 3
+    EXCLUDED = 4
