@@ -8,3 +8,7 @@ class DataNotFoundError(Exception):
 
 class DistributionError(Exception):
     pass
+
+
+class SignError(Exception):
+    pass

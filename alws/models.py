@@ -412,6 +412,17 @@ class Release(Base):
     created_by = relationship('User')
 
 
+class SignTask(Base):
+    __tablename__ = "sign_tasks"
+
+    id = sqlalchemy.Column(sqlalchemy.Integer, primary_key=True)
+    build_id = sqlalchemy.Column(sqlalchemy.Integer,
+                                 sqlalchemy.ForeignKey('builds.id'))
+    status = sqlalchemy.Column(sqlalchemy.Integer, nullable=False)
+    log_url = sqlalchemy.Column(sqlalchemy.Text, nullable=False)
+    sign_key = sqlalchemy.Column(sqlalchemy.Text, nullable=False)
+
+
 async def create_tables():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

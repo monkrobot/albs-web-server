@@ -4,22 +4,23 @@ import collections
 
 import sqlalchemy
 from sqlalchemy import update, delete
+from sqlalchemy import sql
 from sqlalchemy.future import select
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.sql.expression import func
 
 from alws import models
-from alws.errors import DataNotFoundError, BuildError, DistributionError
+from alws.errors import DataNotFoundError, BuildError, DistributionError, SignError
 from alws.config import settings
 from alws.releases import get_release_plan, execute_release_plan, EmptyReleasePlan, MissingRepository
 from alws.utils.pulp_client import PulpClient
 from alws.utils.github import get_user_github_token, get_github_user_info
 from alws.utils.jwt_utils import generate_JWT_token
-from alws.constants import BuildTaskStatus, TestTaskStatus, ReleaseStatus
+from alws.constants import BuildTaskStatus, TestTaskStatus, ReleaseStatus, SignStatus
 from alws.build_planner import BuildPlanner
 from alws.schemas import (
     build_schema, user_schema, platform_schema, build_node_schema,
-    distro_schema, test_schema, release_schema
+    distro_schema, test_schema, release_schema, sign_node_schema
 )
 from alws.utils.distro_utils import create_empty_repo
 
@@ -867,3 +868,113 @@ async def commit_release(db: Session, release_id: int) -> (models.Release, str):
         selectinload(models.Release.platform)
     ))
     return release_res.scalars().first(), message
+
+
+async def get_available_sign_task(
+            db: Session
+        ):
+    async with db.begin():
+        db_tasks = await db.execute(
+            select(models.SignTask).where(
+                models.SignTask.status == SignStatus.IDLE
+            )
+        )
+        db_task = db_tasks.scalars().first()
+        if not db_task:
+            return
+        await db.execute(
+            update(models.SignTask).where(
+                models.SignTask.id == db_task.id
+            ).values(status = SignStatus.STARTED)
+        )
+        await db.commit()
+    return db_task
+
+
+async def create_sign_task(
+            db: Session, 
+            request: sign_node_schema.RequestSignTask
+        ):
+    async with db.begin():
+        binary_rpm = await db.execute(
+            select(models.BinaryRpm).where(
+                models.BinaryRpm.build_id == request.build_id
+            )
+        )
+        if binary_rpm:
+
+            pulp_client = PulpClient(
+                settings.pulp_host,
+                settings.pulp_user,
+                settings.pulp_password
+            )
+
+            tasks = await db.execute(select(models.Build).where(
+                models.Build.id == request.build_id).options(
+                selectinload(models.Build.repos)))
+            task = tasks.scalars().first()
+
+            #logs = []
+            #for log in request.result.get('logs', []):
+            #    if task.repos:
+            #        href = await pulp_client.create_file(
+            #            log['name'], log['href'], task.repos.pulp_href)
+            #    else:
+            #        href = log['href']
+            #    logs.append(href)
+            
+            log = request.result.get('logs', '')
+            if log:
+                if task.repos:
+                    href = await pulp_client.create_file(
+                        log['name'], log['href'], task.repos.pulp_href)
+                else:
+                    href = log['href']
+            else:
+                href = None
+
+            sign_task = models.SignTask(
+                build_id=request.build_id,
+                status=SignStatus.IDLE,
+                log_url=href,
+                sign_key=request.pgp_keyid
+            )
+            await db.add(sign_task)
+            await db.flush()
+            await db.refresh(sign_task)
+            await db.commit()
+            response = {
+                'task_id': sign_task.id,
+                'msg': 'Task is created'
+            }
+        else:
+            response = {
+                'task_id': None,
+                'msg': 'Binary rpm is empty for this build'
+            }
+
+    return response
+
+
+async def sign_done(
+            db: Session,
+            request: sign_node_schema.SignDone
+        ):
+    async with db.begin():
+        query = models.SignTask.id == request.task_id
+        sign_task = await db.execute(
+            select(models.SignTask).where(query)
+        )
+        sign_task = sign_task.scalars().first()
+        if SignStatus.is_finished(sign_task.status):
+            #response = {
+            #    'msg': f'Sign task {sign_task.id} already completed'
+            #}
+            #return response
+            raise SignError(f'Sign task {sign_task.id} already completed')
+        status = SignStatus.COMPLETED
+        if request.status == 'failed':
+            status = SignStatus.FAILED
+        sign_task.status = status
+        db.add(sign_task)
+        await db.commit()

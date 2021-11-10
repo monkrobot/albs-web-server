@@ -29,3 +29,15 @@ class ReleaseStatus(enum.IntEnum):
     IN_PROGRESS = 2
     COMPLETED = 3
     FAILED = 4
+
+
+class SignStatus(enum.IntEnum):
+
+    IDLE = 0
+    STARTED = 1
+    COMPLETED = 2
+    FAILED = 3
+
+    @classmethod
+    def is_finished(cls, status):
+        return status not in (cls.IDLE, cls.STARTED)
